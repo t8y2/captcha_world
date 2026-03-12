@@ -274,6 +274,7 @@ def to_permille(record, captcha_w, captcha_h):
 # ── 网页截图合成增强 ──────────────────────────────────────
 
 AUGMENT_W, AUGMENT_H = 1280, 800  # 合成画布尺寸
+AUGMENT_SCALE = 1.15              # widget 放大倍数（约占画面 35%）
 
 def _load_webpage_bg() -> Image.Image:
     """加载一张随机背景图作为网页底图，拉伸到画布尺寸并模糊处理。"""
@@ -289,10 +290,13 @@ def _load_webpage_bg() -> Image.Image:
 
 def augment_screenshot(widget_img: Image.Image) -> tuple[Image.Image, int, int]:
     """
-    将 widget 截图合成到模拟网页截图上。
+    将 widget 截图放大后合成到模拟网页截图上。
     返回 (合成图, widget 左上角 x 偏移, widget 左上角 y 偏移)。
     """
     ww, wh = widget_img.size
+    sw, sh = int(ww * AUGMENT_SCALE), int(wh * AUGMENT_SCALE)
+    widget_up = widget_img.resize((sw, sh), Image.LANCZOS)
+
     canvas = _load_webpage_bg()
 
     # 半透明深色遮罩模拟模态弹窗
@@ -301,21 +305,21 @@ def augment_screenshot(widget_img: Image.Image) -> tuple[Image.Image, int, int]:
     canvas = Image.alpha_composite(canvas, overlay_mask)
 
     # widget 居中偏移 ± 随机抖动
-    max_jitter_x = max(0, (AUGMENT_W - ww) // 2 - 20)
-    max_jitter_y = max(0, (AUGMENT_H - wh) // 2 - 20)
-    cx = (AUGMENT_W - ww) // 2 + random.randint(-min(max_jitter_x, 80), min(max_jitter_x, 80))
-    cy = (AUGMENT_H - wh) // 2 + random.randint(-min(max_jitter_y, 60), min(max_jitter_y, 60))
-    cx = max(0, min(cx, AUGMENT_W - ww))
-    cy = max(0, min(cy, AUGMENT_H - wh))
+    max_jitter_x = max(0, (AUGMENT_W - sw) // 2 - 20)
+    max_jitter_y = max(0, (AUGMENT_H - sh) // 2 - 20)
+    cx = (AUGMENT_W - sw) // 2 + random.randint(-min(max_jitter_x, 80), min(max_jitter_x, 80))
+    cy = (AUGMENT_H - sh) // 2 + random.randint(-min(max_jitter_y, 60), min(max_jitter_y, 60))
+    cx = max(0, min(cx, AUGMENT_W - sw))
+    cy = max(0, min(cy, AUGMENT_H - sh))
 
     # 给 widget 加投影
-    shadow = Image.new("RGBA", (ww + 16, wh + 16), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle([0, 0, ww + 15, wh + 15], radius=12, fill=(0, 0, 0, 60))
+    shadow_draw.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, 60))
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
     canvas.paste(shadow, (cx - 4, cy + 2), shadow)
 
-    canvas.paste(widget_img.convert("RGBA"), (cx, cy), widget_img.convert("RGBA"))
+    canvas.paste(widget_up.convert("RGBA"), (cx, cy), widget_up.convert("RGBA"))
     return canvas.convert("RGB"), cx, cy
 
 
@@ -329,24 +333,28 @@ def apply_augment(record: dict, type_dir: Path) -> dict:
     first_shot = Image.open(sample_dir / record["steps"][0]["screenshot"])
     _, offset_x, offset_y = augment_screenshot(first_shot)
 
+    # 加载一张固定背景（同一 sample 各步骤保持一致）
+    bg_base = _load_webpage_bg()
+
     for step in record["steps"]:
         shot_path = sample_dir / step["screenshot"]
         widget_img = Image.open(shot_path)
-        aug_img, _, _ = augment_screenshot(widget_img)
-        # 用固定偏移重新合成以保持一致性
         ww, wh = widget_img.size
-        canvas = _load_webpage_bg().convert("RGBA")
+        sw, sh = int(ww * AUGMENT_SCALE), int(wh * AUGMENT_SCALE)
+        widget_up = widget_img.resize((sw, sh), Image.LANCZOS)
+
+        canvas = bg_base.copy().convert("RGBA")
         overlay_mask = Image.new("RGBA", (AUGMENT_W, AUGMENT_H), (0, 0, 0, 120))
         canvas = Image.alpha_composite(canvas, overlay_mask)
-        shadow = Image.new("RGBA", (ww + 16, wh + 16), (0, 0, 0, 0))
+        shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
         sd = ImageDraw.Draw(shadow)
-        sd.rounded_rectangle([0, 0, ww + 15, wh + 15], radius=12, fill=(0, 0, 0, 60))
+        sd.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, 60))
         shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
         canvas.paste(shadow, (offset_x - 4, offset_y + 2), shadow)
-        canvas.paste(widget_img.convert("RGBA"), (offset_x, offset_y), widget_img.convert("RGBA"))
+        canvas.paste(widget_up.convert("RGBA"), (offset_x, offset_y), widget_up.convert("RGBA"))
         canvas.convert("RGB").save(str(shot_path))
 
-        # 重新计算动作坐标（从 widget 千分比 → 新画布千分比）
+        # 重新计算动作坐标（从 widget 千分比 → 放大后画布千分比）
         a = step.get("action")
         if a and "start_box" in a:
             old_w, old_h = record["width"], record["height"]
@@ -361,13 +369,13 @@ def apply_augment(record: dict, type_dir: Path) -> dict:
 
 def _remap_coord(pt_permille: list, old_w: int, old_h: int,
                  offset_x: int, offset_y: int) -> list:
-    """千分比坐标从 widget 空间转换到增强画布空间。"""
+    """千分比坐标从 widget 空间转换到增强画布空间（含放大）。"""
     # 千分比 → widget 像素
     wx = pt_permille[0] / 999 * old_w
     wy = pt_permille[1] / 999 * old_h
-    # widget 像素 → 画布像素
-    cx = wx + offset_x
-    cy = wy + offset_y
+    # widget 像素 → 放大后画布像素
+    cx = wx * AUGMENT_SCALE + offset_x
+    cy = wy * AUGMENT_SCALE + offset_y
     # 画布像素 → 新千分比
     return [min(999, round(cx / AUGMENT_W * 999)),
             min(999, round(cy / AUGMENT_H * 999))]
