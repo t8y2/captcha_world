@@ -42,6 +42,9 @@ OUT  = BASE / "output"
 GUI  = BASE / "gui_data"
 BG_DIR = BASE / "images" / "backgrounds"
 
+# 外部背景图路径（可通过命令行参数指定）
+BACKGROUND_IMG_DIRS = None
+
 # ── helper ──────────────────────────────────────────────
 def load_font(size=12):
     for name in ["/System/Library/Fonts/PingFang.ttc",
@@ -278,7 +281,20 @@ AUGMENT_SCALE = 1.15              # widget 放大倍数（约占画面 35%）
 
 def _load_webpage_bg() -> Image.Image:
     """加载一张随机背景图作为网页底图，拉伸到画布尺寸并模糊处理。"""
-    bgs = list(BG_DIR.glob("*.jpg")) + list(BG_DIR.glob("*.png"))
+    import glob as glob_module
+    
+    bgs = []
+    # 优先使用外部指定的背景图路径
+    if BACKGROUND_IMG_DIRS:
+        for img_dir in BACKGROUND_IMG_DIRS:
+            bgs += glob_module.glob(os.path.join(img_dir, '*.png'))
+            bgs += glob_module.glob(os.path.join(img_dir, '*.jpg'))
+            bgs += glob_module.glob(os.path.join(img_dir, '*.jpeg'))
+    
+    # 如果外部路径没有图片，则使用本地背景
+    if not bgs:
+        bgs = list(BG_DIR.glob("*.jpg")) + list(BG_DIR.glob("*.png"))
+    
     if bgs:
         bg = Image.open(random.choice(bgs)).convert("RGB")
         bg = bg.resize((AUGMENT_W, AUGMENT_H), Image.LANCZOS)
@@ -304,13 +320,9 @@ def augment_screenshot(widget_img: Image.Image) -> tuple[Image.Image, int, int]:
     canvas = canvas.convert("RGBA")
     canvas = Image.alpha_composite(canvas, overlay_mask)
 
-    # widget 居中偏移 ± 随机抖动
-    max_jitter_x = max(0, (AUGMENT_W - sw) // 2 - 20)
-    max_jitter_y = max(0, (AUGMENT_H - sh) // 2 - 20)
-    cx = (AUGMENT_W - sw) // 2 + random.randint(-min(max_jitter_x, 80), min(max_jitter_x, 80))
-    cy = (AUGMENT_H - sh) // 2 + random.randint(-min(max_jitter_y, 60), min(max_jitter_y, 60))
-    cx = max(0, min(cx, AUGMENT_W - sw))
-    cy = max(0, min(cy, AUGMENT_H - sh))
+    # 完全随机位置（在不超出屏幕范围内）
+    cx = random.randint(0, max(0, AUGMENT_W - sw))
+    cy = random.randint(0, max(0, AUGMENT_H - sh))
 
     # 给 widget 加投影
     shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
@@ -621,6 +633,8 @@ GENERATORS = {
 
 
 def main():
+    global BACKGROUND_IMG_DIRS
+    
     parser = argparse.ArgumentParser(description="生成 GUI 交互轨迹数据（图片序列 + 千分比坐标标注）")
     parser.add_argument("--count", "-n", type=int, default=0,
                         help="每种类型生成的样本数（0=全部）")
@@ -630,7 +644,14 @@ def main():
                         help="并发线程数（默认 4）")
     parser.add_argument("--augment", "-a", action="store_true",
                         help="将 widget 合成到网页截图上做数据增强")
+    parser.add_argument("--bg-dirs", nargs="+",
+                        help="指定背景图路径（可多个），用于 augment 时随机选择")
     args = parser.parse_args()
+    
+    # 设置全局背景图路径
+    if args.bg_dirs:
+        BACKGROUND_IMG_DIRS = args.bg_dirs
+        print(f"使用外部背景图路径: {BACKGROUND_IMG_DIRS}")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
