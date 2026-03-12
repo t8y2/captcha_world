@@ -44,6 +44,10 @@ BG_DIR = BASE / "images" / "backgrounds"
 
 # 外部背景图路径（可通过命令行参数指定）
 BACKGROUND_IMG_DIRS = None
+# 背景图模糊半径（可通过命令行参数指定，0表示不模糊）
+BLUR_RADIUS = 1.0
+# 背景图模糊概率（0.5 表示 50% 概率模糊）
+BLUR_PROB = 0.5
 
 # ── helper ──────────────────────────────────────────────
 def load_font(size=12):
@@ -298,7 +302,9 @@ def _load_webpage_bg() -> Image.Image:
     if bgs:
         bg = Image.open(random.choice(bgs)).convert("RGB")
         bg = bg.resize((AUGMENT_W, AUGMENT_H), Image.LANCZOS)
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=3))
+        # 按概率应用模糊（如果 BLUR_RADIUS > 0）
+        if BLUR_RADIUS > 0 and random.random() < BLUR_PROB:
+            bg = bg.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))
     else:
         bg = Image.new("RGB", (AUGMENT_W, AUGMENT_H), (245, 245, 250))
     return bg
@@ -633,7 +639,7 @@ GENERATORS = {
 
 
 def main():
-    global BACKGROUND_IMG_DIRS
+    global BACKGROUND_IMG_DIRS, BLUR_RADIUS, BLUR_PROB
     
     parser = argparse.ArgumentParser(description="生成 GUI 交互轨迹数据（图片序列 + 千分比坐标标注）")
     parser.add_argument("--count", "-n", type=int, default=0,
@@ -646,12 +652,24 @@ def main():
                         help="将 widget 合成到网页截图上做数据增强")
     parser.add_argument("--bg-dirs", nargs="+",
                         help="指定背景图路径（可多个），用于 augment 时随机选择")
+    parser.add_argument("--blur-radius", type=float, default=1.0,
+                        help="背景图模糊半径（默认 1.0，0 表示不模糊）")
+    parser.add_argument("--blur-prob", type=float, default=0.5,
+                        help="背景图模糊概率（默认 0.5 即 50%%，范围 0-1）")
     args = parser.parse_args()
     
     # 设置全局背景图路径
     if args.bg_dirs:
         BACKGROUND_IMG_DIRS = args.bg_dirs
         print(f"使用外部背景图路径: {BACKGROUND_IMG_DIRS}")
+    
+    # 设置全局模糊参数
+    BLUR_RADIUS = args.blur_radius
+    BLUR_PROB = args.blur_prob
+    if BLUR_RADIUS == 0:
+        print("背景图不应用模糊")
+    else:
+        print(f"背景图模糊半径: {BLUR_RADIUS}, 模糊概率: {BLUR_PROB*100:.0f}%")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
