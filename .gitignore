@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 生成的数据（运行脚本即可重建）
+output/
+images/backgrounds/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode
+.github
+.vscode
