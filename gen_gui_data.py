@@ -536,6 +536,10 @@ def main():
         for sample in samples:
             try:
                 rec = fn(sample, type_dir)
+                # 将 screenshot 转为绝对路径
+                sample_dir = type_dir / rec["id"].split("/")[-1]
+                for step in rec["steps"]:
+                    step["screenshot"] = str(sample_dir / step["screenshot"])
                 records.append(rec)
                 total += 1
             except Exception as e:
