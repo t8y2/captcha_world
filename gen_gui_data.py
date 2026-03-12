@@ -48,6 +48,8 @@ BACKGROUND_IMG_DIRS = None
 BLUR_RADIUS = 1.0
 # 背景图模糊概率（0.5 表示 50% 概率模糊）
 BLUR_PROB = 0.5
+# widget 阴影透明度（0-255，0 表示无阴影）
+SHADOW_ALPHA = 15
 
 # ── helper ──────────────────────────────────────────────
 def load_font(size=12):
@@ -330,12 +332,13 @@ def augment_screenshot(widget_img: Image.Image) -> tuple[Image.Image, int, int]:
     cx = random.randint(0, max(0, AUGMENT_W - sw))
     cy = random.randint(0, max(0, AUGMENT_H - sh))
 
-    # 给 widget 加投影
-    shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, 60))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-    canvas.paste(shadow, (cx - 4, cy + 2), shadow)
+    # 给 widget 加投影（如果 SHADOW_ALPHA > 0）
+    if SHADOW_ALPHA > 0:
+        shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow_draw.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, SHADOW_ALPHA))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
+        canvas.paste(shadow, (cx - 4, cy + 2), shadow)
 
     canvas.paste(widget_up.convert("RGBA"), (cx, cy), widget_up.convert("RGBA"))
     return canvas.convert("RGB"), cx, cy
@@ -364,11 +367,15 @@ def apply_augment(record: dict, type_dir: Path) -> dict:
         canvas = bg_base.copy().convert("RGBA")
         overlay_mask = Image.new("RGBA", (AUGMENT_W, AUGMENT_H), (0, 0, 0, 120))
         canvas = Image.alpha_composite(canvas, overlay_mask)
-        shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shadow)
-        sd.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, 60))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-        canvas.paste(shadow, (offset_x - 4, offset_y + 2), shadow)
+        
+        # 给 widget 加投影（如果 SHADOW_ALPHA > 0）
+        if SHADOW_ALPHA > 0:
+            shadow = Image.new("RGBA", (sw + 16, sh + 16), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(shadow)
+            sd.rounded_rectangle([0, 0, sw + 15, sh + 15], radius=12, fill=(0, 0, 0, SHADOW_ALPHA))
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
+            canvas.paste(shadow, (offset_x - 4, offset_y + 2), shadow)
+        
         canvas.paste(widget_up.convert("RGBA"), (offset_x, offset_y), widget_up.convert("RGBA"))
         canvas.convert("RGB").save(str(shot_path))
 
@@ -639,7 +646,7 @@ GENERATORS = {
 
 
 def main():
-    global BACKGROUND_IMG_DIRS, BLUR_RADIUS, BLUR_PROB
+    global BACKGROUND_IMG_DIRS, BLUR_RADIUS, BLUR_PROB, SHADOW_ALPHA
     
     parser = argparse.ArgumentParser(description="生成 GUI 交互轨迹数据（图片序列 + 千分比坐标标注）")
     parser.add_argument("--count", "-n", type=int, default=0,
@@ -656,6 +663,8 @@ def main():
                         help="背景图模糊半径（默认 1.0，0 表示不模糊）")
     parser.add_argument("--blur-prob", type=float, default=0.5,
                         help="背景图模糊概率（默认 0.5 即 50%%，范围 0-1）")
+    parser.add_argument("--shadow-alpha", type=int, default=15,
+                        help="widget 阴影透明度（默认 15 轻微阴影，范围 0-255，0 表示无阴影）")
     args = parser.parse_args()
     
     # 设置全局背景图路径
@@ -670,6 +679,13 @@ def main():
         print("背景图不应用模糊")
     else:
         print(f"背景图模糊半径: {BLUR_RADIUS}, 模糊概率: {BLUR_PROB*100:.0f}%")
+    
+    # 设置全局阴影参数
+    SHADOW_ALPHA = args.shadow_alpha
+    if SHADOW_ALPHA == 0:
+        print("widget 无阴影")
+    else:
+        print(f"widget 阴影透明度: {SHADOW_ALPHA}")
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
