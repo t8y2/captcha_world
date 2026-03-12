@@ -512,7 +512,11 @@ def main():
                         help="每种类型生成的样本数（0=全部）")
     parser.add_argument("--type", "-t", default="all",
                         help="验证码类型，可选: " + ", ".join(GENERATORS.keys()) + ", all（默认 all）")
+    parser.add_argument("--workers", "-w", type=int, default=4,
+                        help="并发线程数（默认 4）")
     args = parser.parse_args()
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     total = 0
     target_types = list(GENERATORS.keys()) if args.type == "all" else [args.type]
@@ -531,20 +535,28 @@ def main():
         if args.count > 0:
             samples = samples[:args.count]
         type_dir = GUI / type_name
-        records = []
+        records = [None] * len(samples)
 
-        for sample in samples:
-            try:
-                rec = fn(sample, type_dir)
-                # 将 screenshot 转为绝对路径
-                sample_dir = type_dir / rec["id"].split("/")[-1]
-                for step in rec["steps"]:
-                    step["screenshot"] = str(sample_dir / step["screenshot"])
-                records.append(rec)
-                total += 1
-            except Exception as e:
-                print(f"  [err] {type_name}/{sample.get('idx','?')}: {e}")
+        def _process(idx_sample):
+            i, sample = idx_sample
+            rec = fn(sample, type_dir)
+            sample_dir = type_dir / rec["id"].split("/")[-1]
+            for step in rec["steps"]:
+                step["screenshot"] = str(sample_dir / step["screenshot"])
+            return i, rec
 
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_process, (i, s)): i for i, s in enumerate(samples)}
+            for fut in as_completed(futures):
+                try:
+                    i, rec = fut.result()
+                    records[i] = rec
+                    total += 1
+                except Exception as e:
+                    idx = futures[fut]
+                    print(f"  [err] {type_name}/{samples[idx].get('idx','?')}: {e}")
+
+        records = [r for r in records if r is not None]
         if records:
             out_jsonl = type_dir / "labels.jsonl"
             out_jsonl.parent.mkdir(parents=True, exist_ok=True)
