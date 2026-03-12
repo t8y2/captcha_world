@@ -90,6 +90,13 @@ def download_one(idx: int) -> dict:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="批量下载风景图作为验证码背景")
+    parser.add_argument("--count", "-n", type=int, default=CONFIG["count"],
+                        help=f"下载数量（默认 {CONFIG['count']}）")
+    args = parser.parse_args()
+    CONFIG["count"] = args.count
+
     ensure_dir()
     count = CONFIG["count"]
     print(f"[INFO] 开始下载 {count} 张背景图 → {CONFIG['output_dir']}/")
@@ -124,7 +131,7 @@ def main():
             print(f"  #{r['idx']}  {r.get('url','')}  {r.get('error','')}")
 
     print(f"\n下载完成后，运行以下命令生成验证码：")
-    print(f"  python slider_captcha_generator.py")
+    print(f"  python captcha_gen.py --type all --count 20")
 
 
 if __name__ == "__main__":
