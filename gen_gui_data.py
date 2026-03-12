@@ -11,7 +11,7 @@ output/gui_data/{type}/{idx:04d}/
     t01.png       执行第一个动作后截图
     ...
     final.png     最终状态
-output/gui_data/{type}/labels.jsonl
+gui_data/{type}/labels.jsonl
     每行一个样本的完整轨迹 JSON
 
 轨迹 JSON 格式
@@ -38,7 +38,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 BASE = Path(__file__).parent
 OUT  = BASE / "output"
-GUI  = OUT / "gui_data"
+GUI  = BASE / "gui_data"
 
 # ── helper ──────────────────────────────────────────────
 def load_font(size=12):
@@ -236,9 +236,14 @@ def to_permille(record, captcha_w, captcha_h):
     scale = WIDGET_W / captcha_w
 
     def px(x, y):
+        """captcha 像素 → widget 像素 → 千分比"""
         wx = x * scale
         wy = y * scale + HEADER_H
         return (min(999, round(wx / w * 999)), min(999, round(wy / h * 999)))
+
+    def wpx(x, y):
+        """widget 像素 → 千分比（已在 widget 坐标系）"""
+        return (min(999, round(x / w * 999)), min(999, round(y / h * 999)))
 
     def px_x(x):
         return min(999, round(x * scale / w * 999))
@@ -247,11 +252,12 @@ def to_permille(record, captcha_w, captcha_h):
         a = step.get("action")
         if not a:
             continue
-        if a["type"] == "click" and "x" in a and "y" in a:
-            a["x"], a["y"] = px(a["x"], a["y"])
-        elif a["type"] == "drag":
-            a["from_x"], a["from_y"] = px(a["from_x"], a["from_y"])
-            a["to_x"], a["to_y"] = px(a["to_x"], a["to_y"])
+        conv = wpx if a.pop("_widget", False) else px
+        if a["type"] == "left_click" and "start_box" in a:
+            a["start_box"] = list(conv(a["start_box"][0], a["start_box"][1]))
+        elif a["type"] == "left_drag" and "start_box" in a:
+            a["start_box"] = list(conv(a["start_box"][0], a["start_box"][1]))
+            a["end_box"]   = list(conv(a["end_box"][0], a["end_box"][1]))
 
     ans = record["answer"]
     if isinstance(ans, list) and ans and isinstance(ans[0], dict) and "x" in ans[0]:
@@ -287,13 +293,24 @@ def gen_slide(sample, type_dir):
     # t00: piece at left, slider at 0
     t00_raw = composite(0)
     t00 = render_widget(t00_raw, title, instr, controls="slider", slider_pos=0.0)
+
+    # 计算滑块 thumb 在 widget 上的像素坐标
+    scale = WIDGET_W / W
+    scaled_h = int(H * scale)
+    track_x, track_w = 14, WIDGET_W - 28
+    track_y = HEADER_H + scaled_h + 26  # instr_pad=26
+    thumb_cy = track_y + 22              # thumb 垂直中心
+    thumb_start_cx = track_x + 4 + 18   # slider_pos=0 时 thumb 中心 X
+    slider_ratio = gap_x / max(1, W - PW)
+    thumb_end_cx = track_x + int(slider_ratio * (track_w - 36)) + 4 + 18
+
     steps.append({"t": 0, "screenshot": "t00.png",
                   "desc": "向右拖动滑块，将拼图滑入缺口",
-                  "action": {"type": "drag", "from_x": 0, "from_y": gap_y + PH//2,
-                             "to_x": gap_x, "to_y": gap_y + PH//2}})
+                  "action": {"type": "left_drag", "_widget": True,
+                             "start_box": [thumb_start_cx, thumb_cy],
+                             "end_box": [thumb_end_cx, thumb_cy]}})
 
     # t01: piece at answer, slider at target
-    slider_ratio = gap_x / max(1, W - PW)
     t01_raw = composite(gap_x)
     t01 = render_widget(t01_raw, title, instr, controls="slider", slider_pos=slider_ratio)
     steps.append({"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None})
@@ -321,7 +338,7 @@ def _click_sequence(base_img, answer_pts, label_fn, task, idx, type_dir, type_na
     save(t00, type_dir / idx / "t00.png")
 
     for i, pt in enumerate(answer_pts):
-        action = {"type": "click", "x": pt["x"], "y": pt["y"]}
+        action = {"type": "left_click", "start_box": [pt["x"], pt["y"]]}
         desc = label_fn(i, pt)
         steps.append({"t": i, "screenshot": f"t{i:02d}.png",
                       "desc": f"点击第{desc}个目标", "action": action})
@@ -364,7 +381,8 @@ def gen_click_order(sample, type_dir):
     save(t00, type_dir / sample["idx"] / "t00.png")
 
     for i, pt in enumerate(ans):
-        action = {"type": "click", "x": pt["x"], "y": pt["y"],
+        action = {"type": "left_click",
+                  "start_box": [pt["x"], pt["y"]],
                   "label": pt["label"]}
         steps.append({"t": i, "screenshot": f"t{i:02d}.png",
                       "desc": f"点击字符 {pt['label']}", "action": action})
@@ -396,9 +414,18 @@ def gen_rotation_match(sample, type_dir):
     # t00: original (current angle), slider at center
     t00 = render_widget(img.copy(), title, instr, controls="rotation", slider_pos=0.5)
     save(t00, type_dir / sample["idx"] / "t00.png")
+    # 计算旋转滑条的起止像素位置（widget 坐标系）
+    bar_x, bar_w = 56, WIDGET_W - 120
+    instr_pad = 26
+    bar_pixel_y = HEADER_H + int(IH * WIDGET_W / IW) + instr_pad + 2 + 8 + 2
+    knob_start_x = bar_x + int(0.5 * bar_w)      # 初始中点
+    knob_end_x   = bar_x + int(((deg + 180) / 360) * bar_w)
     steps.append({"t": 0, "screenshot": "t00.png",
                   "desc": f"拖动滑块旋转 {deg}° 对齐",
-                  "action": {"type": "rotate", "degrees": deg}})
+                  "action": {"type": "left_drag",
+                             "start_box": [knob_start_x, bar_pixel_y],
+                             "end_box": [knob_end_x, bar_pixel_y],
+                             "degrees": deg}})
 
     # t01: left half rotated by answer degrees
     result = img.copy()
@@ -415,10 +442,18 @@ def gen_rotation_match(sample, type_dir):
     save(t01, type_dir / sample["idx"] / "t01.png")
     steps.append({"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None})
 
+    # 将 widget 像素坐标转换为千分比
+    ww, wh = t00.width, t00.height
+    for step in steps:
+        a = step.get("action")
+        if a and "start_box" in a:
+            a["start_box"] = [min(999, round(a["start_box"][0] / ww * 999)),
+                              min(999, round(a["start_box"][1] / wh * 999))]
+            a["end_box"]   = [min(999, round(a["end_box"][0] / ww * 999)),
+                              min(999, round(a["end_box"][1] / wh * 999))]
     return {"id": f"rotation_match/{sample['idx']}", "type": "rotation_match",
             "task": title,
-            "width": t00.width, "height": t00.height, "steps": steps, "answer": deg}
-    # rotation_match: 角度类型，不需要坐标转换
+            "width": ww, "height": wh, "steps": steps, "answer": deg}
 
 
 def gen_coordinates(sample, type_dir):
@@ -447,9 +482,9 @@ def gen_coordinates(sample, type_dir):
     steps = [
         {"t": 0, "screenshot": "t00.png",
          "desc": f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})",
-         "action": {"type": "drag",
-                    "from_x": from_x, "from_y": from_y,
-                    "to_x": to_x, "to_y": to_y,
+         "action": {"type": "left_drag",
+                    "start_box": [from_x, from_y],
+                    "end_box": [to_x, to_y],
                     "grid_x": sample["answer"]["x"], "grid_y": sample["answer"]["y"]}},
         {"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None},
     ]

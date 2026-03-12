@@ -1,7 +1,6 @@
 """所有验证码生成器的基类"""
 import os
 import json
-import csv
 from abc import ABC, abstractmethod
 from pathlib import Path
 from PIL import ImageFont
@@ -67,13 +66,6 @@ class BaseGenerator(ABC):
                 print(f"  [{self.name}] {i}/{self.count}")
 
         # 保存标注
-        csv_path = self.out / "labels.csv"
-        if labels:
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(labels[0].keys()))
-                writer.writeheader()
-                writer.writerows(labels)
-
         json_path = self.out / "labels.json"
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(labels, f, ensure_ascii=False, indent=2)

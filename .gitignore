@@ -5,6 +5,7 @@ __pycache__/
 
 # 生成的数据（运行脚本即可重建）
 output/
+gui_data/
 images/backgrounds/
 
 # macOS
