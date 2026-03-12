@@ -33,12 +33,14 @@ gui_data/{type}/labels.jsonl
 import argparse
 import json
 import os
+import random
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 BASE = Path(__file__).parent
 OUT  = BASE / "output"
 GUI  = BASE / "gui_data"
+BG_DIR = BASE / "images" / "backgrounds"
 
 # ── helper ──────────────────────────────────────────────
 def load_font(size=12):
@@ -269,6 +271,107 @@ def to_permille(record, captcha_w, captcha_h):
 
     return record
 
+# ── 网页截图合成增强 ──────────────────────────────────────
+
+AUGMENT_W, AUGMENT_H = 1280, 800  # 合成画布尺寸
+
+def _load_webpage_bg() -> Image.Image:
+    """加载一张随机背景图作为网页底图，拉伸到画布尺寸并模糊处理。"""
+    bgs = list(BG_DIR.glob("*.jpg")) + list(BG_DIR.glob("*.png"))
+    if bgs:
+        bg = Image.open(random.choice(bgs)).convert("RGB")
+        bg = bg.resize((AUGMENT_W, AUGMENT_H), Image.LANCZOS)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=3))
+    else:
+        bg = Image.new("RGB", (AUGMENT_W, AUGMENT_H), (245, 245, 250))
+    return bg
+
+
+def augment_screenshot(widget_img: Image.Image) -> tuple[Image.Image, int, int]:
+    """
+    将 widget 截图合成到模拟网页截图上。
+    返回 (合成图, widget 左上角 x 偏移, widget 左上角 y 偏移)。
+    """
+    ww, wh = widget_img.size
+    canvas = _load_webpage_bg()
+
+    # 半透明深色遮罩模拟模态弹窗
+    overlay_mask = Image.new("RGBA", (AUGMENT_W, AUGMENT_H), (0, 0, 0, 120))
+    canvas = canvas.convert("RGBA")
+    canvas = Image.alpha_composite(canvas, overlay_mask)
+
+    # widget 居中偏移 ± 随机抖动
+    max_jitter_x = max(0, (AUGMENT_W - ww) // 2 - 20)
+    max_jitter_y = max(0, (AUGMENT_H - wh) // 2 - 20)
+    cx = (AUGMENT_W - ww) // 2 + random.randint(-min(max_jitter_x, 80), min(max_jitter_x, 80))
+    cy = (AUGMENT_H - wh) // 2 + random.randint(-min(max_jitter_y, 60), min(max_jitter_y, 60))
+    cx = max(0, min(cx, AUGMENT_W - ww))
+    cy = max(0, min(cy, AUGMENT_H - wh))
+
+    # 给 widget 加投影
+    shadow = Image.new("RGBA", (ww + 16, wh + 16), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle([0, 0, ww + 15, wh + 15], radius=12, fill=(0, 0, 0, 60))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
+    canvas.paste(shadow, (cx - 4, cy + 2), shadow)
+
+    canvas.paste(widget_img.convert("RGBA"), (cx, cy), widget_img.convert("RGBA"))
+    return canvas.convert("RGB"), cx, cy
+
+
+def apply_augment(record: dict, type_dir: Path) -> dict:
+    """
+    对 record 中每张截图做网页合成增强，更新坐标为增强后画布的千分比。
+    """
+    sample_dir = type_dir / record["id"].split("/")[-1]
+
+    # 先确定一组固定偏移（同一 sample 所有步骤使用相同偏移）
+    first_shot = Image.open(sample_dir / record["steps"][0]["screenshot"])
+    _, offset_x, offset_y = augment_screenshot(first_shot)
+
+    for step in record["steps"]:
+        shot_path = sample_dir / step["screenshot"]
+        widget_img = Image.open(shot_path)
+        aug_img, _, _ = augment_screenshot(widget_img)
+        # 用固定偏移重新合成以保持一致性
+        ww, wh = widget_img.size
+        canvas = _load_webpage_bg().convert("RGBA")
+        overlay_mask = Image.new("RGBA", (AUGMENT_W, AUGMENT_H), (0, 0, 0, 120))
+        canvas = Image.alpha_composite(canvas, overlay_mask)
+        shadow = Image.new("RGBA", (ww + 16, wh + 16), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shadow)
+        sd.rounded_rectangle([0, 0, ww + 15, wh + 15], radius=12, fill=(0, 0, 0, 60))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
+        canvas.paste(shadow, (offset_x - 4, offset_y + 2), shadow)
+        canvas.paste(widget_img.convert("RGBA"), (offset_x, offset_y), widget_img.convert("RGBA"))
+        canvas.convert("RGB").save(str(shot_path))
+
+        # 重新计算动作坐标（从 widget 千分比 → 新画布千分比）
+        a = step.get("action")
+        if a and "start_box" in a:
+            old_w, old_h = record["width"], record["height"]
+            a["start_box"] = _remap_coord(a["start_box"], old_w, old_h, offset_x, offset_y)
+            if "end_box" in a:
+                a["end_box"] = _remap_coord(a["end_box"], old_w, old_h, offset_x, offset_y)
+
+    record["width"] = AUGMENT_W
+    record["height"] = AUGMENT_H
+    return record
+
+
+def _remap_coord(pt_permille: list, old_w: int, old_h: int,
+                 offset_x: int, offset_y: int) -> list:
+    """千分比坐标从 widget 空间转换到增强画布空间。"""
+    # 千分比 → widget 像素
+    wx = pt_permille[0] / 999 * old_w
+    wy = pt_permille[1] / 999 * old_h
+    # widget 像素 → 画布像素
+    cx = wx + offset_x
+    cy = wy + offset_y
+    # 画布像素 → 新千分比
+    return [min(999, round(cx / AUGMENT_W * 999)),
+            min(999, round(cy / AUGMENT_H * 999))]
+
 # ── per-type generators ──────────────────────────────────
 
 def gen_slide(sample, type_dir):
@@ -306,6 +409,7 @@ def gen_slide(sample, type_dir):
 
     steps.append({"t": 0, "screenshot": "t00.png",
                   "desc": "向右拖动滑块，将拼图滑入缺口",
+                  "element_info": "滑块",
                   "action": {"type": "left_drag", "_widget": True,
                              "start_box": [thumb_start_cx, thumb_cy],
                              "end_box": [thumb_end_cx, thumb_cy]}})
@@ -422,6 +526,7 @@ def gen_rotation_match(sample, type_dir):
     knob_end_x   = bar_x + int(((deg + 180) / 360) * bar_w)
     steps.append({"t": 0, "screenshot": "t00.png",
                   "desc": f"拖动滑块旋转 {deg}° 对齐",
+                  "element_info": "旋转滑块",
                   "action": {"type": "left_drag",
                              "start_box": [knob_start_x, bar_pixel_y],
                              "end_box": [knob_end_x, bar_pixel_y],
@@ -462,15 +567,15 @@ def gen_coordinates(sample, type_dir):
     IH = img.height
     ORIGIN_Y = IH - ORIGIN_X
     idx = sample["idx"]
-    task = f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})"
-
     icon_pos = sample.get("icon_pos", {"x": 0, "y": 0})
+    task = f"将蓝色图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})"
+
     from_x = ORIGIN_X + icon_pos["x"] * CELL
     from_y = ORIGIN_Y - icon_pos["y"] * CELL
     to_x = ORIGIN_X + sample["answer"]["x"] * CELL
     to_y = ORIGIN_Y - sample["answer"]["y"] * CELL
 
-    t00 = render_widget(img, task, f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})")
+    t00 = render_widget(img, task, f"请将蓝色图标拖动到坐标 ({sample['answer']['x']}, {sample['answer']['y']})")
     save(t00, type_dir / idx / "t00.png")
 
     marks = blank_marks(img)
@@ -481,7 +586,8 @@ def gen_coordinates(sample, type_dir):
 
     steps = [
         {"t": 0, "screenshot": "t00.png",
-         "desc": f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})",
+         "desc": f"将蓝色图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})",
+         "element_info": f"蓝色图标，当前位于坐标 ({icon_pos['x']}, {icon_pos['y']})",
          "action": {"type": "left_drag",
                     "start_box": [from_x, from_y],
                     "end_box": [to_x, to_y],
@@ -514,6 +620,8 @@ def main():
                         help="验证码类型，可选: " + ", ".join(GENERATORS.keys()) + ", all（默认 all）")
     parser.add_argument("--workers", "-w", type=int, default=4,
                         help="并发线程数（默认 4）")
+    parser.add_argument("--augment", "-a", action="store_true",
+                        help="将 widget 合成到网页截图上做数据增强")
     args = parser.parse_args()
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -543,6 +651,8 @@ def main():
             sample_dir = type_dir / rec["id"].split("/")[-1]
             for step in rec["steps"]:
                 step["screenshot"] = str(sample_dir / step["screenshot"])
+            if args.augment:
+                rec = apply_augment(rec, type_dir)
             return i, rec
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
