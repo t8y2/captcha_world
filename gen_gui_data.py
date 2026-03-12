@@ -288,6 +288,7 @@ def gen_slide(sample, type_dir):
     t00_raw = composite(0)
     t00 = render_widget(t00_raw, title, instr, controls="slider", slider_pos=0.0)
     steps.append({"t": 0, "screenshot": "t00.png",
+                  "desc": "向右拖动滑块，将拼图滑入缺口",
                   "action": {"type": "drag", "from_x": 0, "from_y": gap_y + PH//2,
                              "to_x": gap_x, "to_y": gap_y + PH//2}})
 
@@ -295,7 +296,7 @@ def gen_slide(sample, type_dir):
     slider_ratio = gap_x / max(1, W - PW)
     t01_raw = composite(gap_x)
     t01 = render_widget(t01_raw, title, instr, controls="slider", slider_pos=slider_ratio)
-    steps.append({"t": 1, "screenshot": "t01.png", "action": None})
+    steps.append({"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None})
 
     idx = sample["idx"]
     d = type_dir / idx
@@ -321,7 +322,9 @@ def _click_sequence(base_img, answer_pts, label_fn, task, idx, type_dir, type_na
 
     for i, pt in enumerate(answer_pts):
         action = {"type": "click", "x": pt["x"], "y": pt["y"]}
-        steps.append({"t": i, "screenshot": f"t{i:02d}.png", "action": action})
+        desc = label_fn(i, pt)
+        steps.append({"t": i, "screenshot": f"t{i:02d}.png",
+                      "desc": f"点击第{desc}个目标", "action": action})
         draw_dot(draw, pt["x"], pt["y"], label_fn(i, pt))
         t_next_raw = overlay(base_img, marks.copy())
         t_next = render_widget(t_next_raw, task)
@@ -329,7 +332,7 @@ def _click_sequence(base_img, answer_pts, label_fn, task, idx, type_dir, type_na
 
     # final: no action
     steps.append({"t": len(answer_pts), "screenshot": f"t{len(answer_pts):02d}.png",
-                  "action": None})
+                  "desc": "验证完成", "action": None})
 
     cw, ch = base_img.size
     record = {"id": f"{type_name}/{idx}", "type": type_name,
@@ -363,13 +366,15 @@ def gen_click_order(sample, type_dir):
     for i, pt in enumerate(ans):
         action = {"type": "click", "x": pt["x"], "y": pt["y"],
                   "label": pt["label"]}
-        steps.append({"t": i, "screenshot": f"t{i:02d}.png", "action": action})
+        steps.append({"t": i, "screenshot": f"t{i:02d}.png",
+                      "desc": f"点击字符 {pt['label']}", "action": action})
         draw_dot(draw, pt["x"], pt["y"], pt["label"], (30, 120, 220))
         next_lbl = ans[i+1]["label"] if i+1 < len(ans) else "完成"
         t_next = render_widget(overlay(img, marks.copy()), task)
         save(t_next, type_dir / sample["idx"] / f"t{i+1:02d}.png")
 
-    steps.append({"t": len(ans), "screenshot": f"t{len(ans):02d}.png", "action": None})
+    steps.append({"t": len(ans), "screenshot": f"t{len(ans):02d}.png",
+                  "desc": "验证完成", "action": None})
     cw, ch = img.size
     record = {"id": f"click_order/{sample['idx']}", "type": "click_order",
               "task": task, "width": t00.width, "height": t00.height,
@@ -392,6 +397,7 @@ def gen_rotation_match(sample, type_dir):
     t00 = render_widget(img.copy(), title, instr, controls="rotation", slider_pos=0.5)
     save(t00, type_dir / sample["idx"] / "t00.png")
     steps.append({"t": 0, "screenshot": "t00.png",
+                  "desc": f"拖动滑块旋转 {deg}° 对齐",
                   "action": {"type": "rotate", "degrees": deg}})
 
     # t01: left half rotated by answer degrees
@@ -407,7 +413,7 @@ def gen_rotation_match(sample, type_dir):
     slider_ratio = (deg + 180) / 360  # map [-180,180] → [0,1]
     t01 = render_widget(result, title, f"已旋转 {deg}°", controls="rotation", slider_pos=slider_ratio)
     save(t01, type_dir / sample["idx"] / "t01.png")
-    steps.append({"t": 1, "screenshot": "t01.png", "action": None})
+    steps.append({"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None})
 
     return {"id": f"rotation_match/{sample['idx']}", "type": "rotation_match",
             "task": title,
@@ -421,25 +427,31 @@ def gen_coordinates(sample, type_dir):
     IH = img.height
     ORIGIN_Y = IH - ORIGIN_X
     idx = sample["idx"]
-    task = f"点击坐标 ({sample['answer']['x']}, {sample['answer']['y']}) 位置的格子"
+    task = f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})"
 
-    ax = ORIGIN_X + sample["answer"]["x"] * CELL
-    ay = ORIGIN_Y - sample["answer"]["y"] * CELL
+    icon_pos = sample.get("icon_pos", {"x": 0, "y": 0})
+    from_x = ORIGIN_X + icon_pos["x"] * CELL
+    from_y = ORIGIN_Y - icon_pos["y"] * CELL
+    to_x = ORIGIN_X + sample["answer"]["x"] * CELL
+    to_y = ORIGIN_Y - sample["answer"]["y"] * CELL
 
     t00 = render_widget(img, task, f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})")
     save(t00, type_dir / idx / "t00.png")
 
     marks = blank_marks(img)
     d = ImageDraw.Draw(marks, "RGBA")
-    draw_dot(d, ax, ay, "✓", (30, 160, 90))
+    draw_dot(d, to_x, to_y, "✓", (30, 160, 90))
     t01 = render_widget(overlay(img, marks), task, "已完成")
     save(t01, type_dir / idx / "t01.png")
 
     steps = [
         {"t": 0, "screenshot": "t00.png",
-         "action": {"type": "click", "x": ax, "y": ay,
+         "desc": f"将图标拖至坐标 ({sample['answer']['x']}, {sample['answer']['y']})",
+         "action": {"type": "drag",
+                    "from_x": from_x, "from_y": from_y,
+                    "to_x": to_x, "to_y": to_y,
                     "grid_x": sample["answer"]["x"], "grid_y": sample["answer"]["y"]}},
-        {"t": 1, "screenshot": "t01.png", "action": None},
+        {"t": 1, "screenshot": "t01.png", "desc": "验证完成", "action": None},
     ]
     cw_val, ch_val = img.size
     record = {"id": f"coordinates/{idx}", "type": "coordinates",
